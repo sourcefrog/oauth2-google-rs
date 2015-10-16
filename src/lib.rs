@@ -3,27 +3,36 @@
 extern crate url;
 extern crate curl;
 #[macro_use] extern crate log;
+extern crate rustc_serialize;
+
+// TODO: Maybe serde not rustc_serialize?
+use rustc_serialize::json;
 
 use url::Url;
 use std::collections::HashMap;
 
+/// TODO: Is Hyper better than Curl for Rust?
 use curl::http;
 
-/// Configuration of an oauth2 application.
-pub struct Config {
+/// A flow by which an OAuth2 application can aquire credentials.
+pub struct Flow {
     pub client_id: String,
     pub client_secret: String,
     pub scopes: Vec<String>,
     pub auth_url: Url,
     pub token_url: Url,
     pub redirect_url: String,
+    pub response_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
-pub struct Token {
+/// Credentials that can be used to make general API calls.
+#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, RustcDecodable, RustcEncodable)]
+pub struct Credentials {
     pub access_token: String,
-    pub scopes: Vec<String>,
+    // pub scopes: Vec<String>,
     pub token_type: String,
+    pub expires_in: u32,
+    pub refresh_token: String,
 }
 
 /// Helper trait for extending the builder-style pattern of curl::Request.
@@ -31,29 +40,39 @@ pub struct Token {
 /// This trait allows chaining the correct authorization headers onto a curl
 /// request via the builder style.
 pub trait Authorization {
-    fn auth_with(self, token: &Token) -> Self;
+    fn auth_with(self, token: &Credentials) -> Self;
 }
 
-impl Config {
+impl Flow {
+    /// TODO: Option to load from client_secrets.json as recommended by
+    /// Google.
     pub fn new(id: &str, secret: &str, auth_url: &str,
-               token_url: &str) -> Config {
-        Config {
+               token_url: &str, redirect_url: &str,
+               scopes: Vec<String>) -> Flow {
+        Flow {
             client_id: id.to_string(),
             client_secret: secret.to_string(),
-            scopes: Vec::new(),
             auth_url: Url::parse(auth_url).unwrap(),
             token_url: Url::parse(token_url).unwrap(),
-            redirect_url: String::new(),
+            redirect_url: redirect_url.to_string(),
+            response_type: "code".to_string(),
+            scopes: scopes.clone(),
         }
     }
 
     #[allow(deprecated)] // connect => join in 1.3
-    pub fn authorize_url(&self, state: String) -> Url {
+    /// Make a URL at which the user can authorize the application.
+    ///
+    /// `state` is a string to be shown to the user in the authorization flow.
+    ///
+    /// TODO: Maybe take a list of scopes here rather than in the config.
+    pub fn get_authorize_uri(&self, state: String) -> Url {
         let scopes = self.scopes.connect(",");
         let mut pairs = vec![
             ("client_id", &self.client_id),
             ("state", &state),
             ("scope", &scopes),
+            ("response_type", &self.response_type),
         ];
         if self.redirect_url.len() > 0 {
             pairs.push(("redirect_uri", &self.redirect_url));
@@ -65,7 +84,12 @@ impl Config {
         return url;
     }
 
-    pub fn exchange(&self, code: String) -> Result<Token, String> {
+    /// Exchange an authorization code for credentials.
+    ///
+    /// `code` is obtained after the user authorizes the application at
+    /// `get_authorize_uri`, and then typically pastes the code back to this
+    /// application.
+    pub fn exchange(&self, code: String) -> Result<Credentials, String> {
         let mut form = HashMap::new();
         form.insert("client_id", self.client_id.clone());
         form.insert("client_secret", self.client_secret.clone());
@@ -73,6 +97,7 @@ impl Config {
         if self.redirect_url.len() > 0 {
             form.insert("redirect_uri", self.redirect_url.clone());
         }
+        form.insert("grant_type", "authorization_code".to_string());
 
         let form = url::form_urlencoded::serialize(form.iter().map(|(k, v)| {
             (&k[..], &v[..])
@@ -88,47 +113,29 @@ impl Config {
                                .map_err(|s| s.to_string()));
 
         if result.get_code() != 200 {
-            return Err(format!("expected `200`, found `{}`", result.get_code()))
+            return Err(format!("expected `200`, found `{}`: {}",
+                               result.get_code(),
+                               String::from_utf8_lossy(result.get_body())))
         }
 
-        let mut token = Token {
-            access_token: String::new(),
-            scopes: Vec::new(),
-            token_type: String::new(),
-        };
-        let mut error = String::new();
-        let mut error_desc = String::new();
-        let mut error_uri = String::new();
+        println!("response headers: {:?}", result.get_headers());
+        
+        // TODO: If response isn't 200, return some appropriate error,
+        // including the body.
 
-        let form = url::form_urlencoded::parse(result.get_body());
-        debug!("reponse: {:?}", form);
-        for(k, v) in form.into_iter() {
-            match &k[..] {
-                "access_token" => token.access_token = v,
-                "token_type" => token.token_type = v,
-                "scope" => {
-                    token.scopes = v.split(',')
-                                    .map(|s| s.to_string()).collect();
-                }
-                "error" => error = v,
-                "error_description" => error_desc = v,
-                "error_uri" => error_uri = v,
-                _ => {}
-            }
-        }
-
-        if token.access_token.len() != 0 {
-            Ok(token)
-        } else if error.len() > 0 {
-            Err(format!("error `{}`: {}, see {}", error, error_desc, error_uri))
-        } else {
-            Err(format!("couldn't find access_token in the response"))
-        }
+        let body_string = std::str::from_utf8(result.get_body()).unwrap();
+        println!("{}", body_string);
+        let token: Credentials = json::decode(body_string).unwrap();
+        
+        // TODO: Check whether the response is json or urlencoded, and decode
+        // appropriately.
+        Ok(token)
     }
 }
 
+// TODO: Perhaps this wants 'bearer' not 'token' for Google?
 impl<'a, 'b> Authorization for http::Request<'a, 'b> {
-    fn auth_with(self, token: &Token) -> http::Request<'a, 'b> {
+    fn auth_with(self, token: &Credentials) -> http::Request<'a, 'b> {
         self.header("Authorization",
                     &format!("token {}", token.access_token))
     }
