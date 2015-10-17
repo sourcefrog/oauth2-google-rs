@@ -1,6 +1,8 @@
 [package]
 name = "oauth2"
-authors = ["Alex Crichton <alex@alexcrichton.com>"]
+authors = [
+    "Alex Crichton <alex@alexcrichton.com>",
+    "Martin Pool <mbp@sourcefrog.net>"]
 version = "0.1.9"
 license = "MIT/Apache-2.0"
 description = "Bindings for exchanging OAuth 2 tokens"
