@@ -6,7 +6,7 @@ authors = [
 version = "0.1.9"
 license = "MIT/Apache-2.0"
 description = "Bindings for exchanging OAuth 2 tokens"
-repository = "https://github.com/alexcrichton/oauth2-rs"
+repository = "https://github.com/sourcefrog/oauth2-google-rs"
 
 [dependencies]
 curl = "0.2.0"
