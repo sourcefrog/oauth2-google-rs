@@ -30,6 +30,6 @@ fn main() {
     io::stdin().read_line(&mut code)
         .ok().expect("Failed to read line");
 
-    println!("{:?}", oauth2_config.exchange(code));
+    println!("Got credentials: {:?}", oauth2_config.exchange(code));
 
 }
